@@ -1,4 +1,4 @@
-/* wy2live.c —— 完整模拟客户端逻辑（含时间校正重试），对微验真实服务器验证 */
+﻿/* wy2live.c —— 完整模拟客户端逻辑（含时间校正重试），对微验真实服务器验证 */
 #include "wy2.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,10 +44,15 @@ static int jstr(const char *j, const char *key, char *out, size_t cap)
     if (!*p) return -1;
     p++;
     while (*p == ' ' || *p == '\t') p++;
-    if (*p != '"') return -1;
-    p++;
     size_t i = 0;
-    while (*p && *p != '"' && i + 1 < cap) out[i++] = *p++;
+    if (*p == '"') {           /* 字符串值 */
+        p++;
+        while (*p && *p != '"' && i + 1 < cap) out[i++] = *p++;
+    } else {                   /* 数字/布尔值 */
+        while (*p && *p != ',' && *p != '}' && i + 1 < cap) out[i++] = *p++;
+    }
+    /* 去掉尾部空白 */
+    while (i > 0 && (out[i-1] == ' ' || out[i-1] == '\t' || out[i-1] == '\r' || out[i-1] == '\n')) i--;
     out[i] = 0;
     return (int)i;
 }
@@ -149,3 +154,4 @@ int main(void)
     else printf("返回码 %ld，需进一步核对\n", code);
     return 0;
 }
+
