@@ -571,6 +571,162 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 - (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
 @end
 
+// ============================================================
+//  公告 / 更新检查 / 通用请求（追加到 CardGate.m 末尾的独立段落）
+//  协议来源：微验官方示例 Form1.cs 的 CheckNotice / CheckUpdate
+//  公告与更新走【字面 code/msg】字段，不参与混淆字段名映射
+// ============================================================
+
+static char gNoticeId[16], gNoticeCode[16], gIniId[16], gIniCode[16], gAppVer[16];
+
+static dispatch_once_t gExtOnce;
+static void WYUnsealExt(void)
+{
+    dispatch_once(&gExtOnce, ^{
+        wyguard_unseal(SEAL_NOTICEID,   (unsigned char *)gNoticeId,   SEAL_NOTICEID_len,   SEAL_NOTICEID_key);
+        wyguard_unseal(SEAL_NOTICECODE, (unsigned char *)gNoticeCode, SEAL_NOTICECODE_len, SEAL_NOTICECODE_key);
+        wyguard_unseal(SEAL_INIID,      (unsigned char *)gIniId,      SEAL_INIID_len,      SEAL_INIID_key);
+        wyguard_unseal(SEAL_INICODE,    (unsigned char *)gIniCode,    SEAL_INICODE_len,    SEAL_INICODE_key);
+        wyguard_unseal(SEAL_APPVER,     (unsigned char *)gAppVer,     SEAL_APPVER_len,     SEAL_APPVER_key);
+    });
+}
+
+typedef void (^WYRawDone)(BOOL ok, NSDictionary *json, NSString *err);
+
+/* 通用 v2 请求：不做业务判定，只负责封包/发送/验签/解密，返回业务明文 JSON */
+static void WYExecRequest(const char *apiId, NSString *kami, WYRawDone done)
+{
+    WYUnseal();
+    WYUnsealExt();
+
+    NSString *card = kami ?: @"";
+    long long T = (long long)[[NSDate date] timeIntervalSince1970] + gTimeOffset;
+    unsigned value = (unsigned)(100000 + arc4random_uniform(900000));
+    NSString *valueStr = [NSString stringWithFormat:@"%lld%u", T, value];
+    NSString *mark = WYMarkCode();
+
+    NSString *signSrc = [NSString stringWithFormat:@"kami=%@&markcode=%@&t=%lld&%s",
+                         card, mark, T, gAppKey];
+    NSString *sign = WYMD5(signSrc);
+    NSString *plain = [NSString stringWithFormat:
+                       @"id=%s&kami=%@&markcode=%@&t=%lld&sign=%@&value=%@",
+                       apiId, card, mark, T, sign, valueStr];
+
+    char *frame = NULL;
+    NSMutableData *keyData = [NSMutableData dataWithLength:32];
+    uint8_t *respKey = (uint8_t *)keyData.mutableBytes;
+    memset(respKey, 0, 32);
+    if (wy2_seal(gSrvX, gLicPub, gLicCli, gAppKey, plain.UTF8String, card.UTF8String,
+                 &frame, respKey) != 0) {
+        done(NO, nil, @"安全通道初始化失败");
+        return;
+    }
+    NSString *body = [NSString stringWithUTF8String:frame];
+    free(frame);
+
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://%s/v2/%s",
+                                       gHost, gToken]];
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 20;
+    [req setValue:@"text/plain" forHTTPHeaderField:@"Content-Type"];
+    req.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req
+        completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
+        if (e || !d.length) { done(NO, nil, @"网络错误"); return; }
+        uint8_t *rk = (uint8_t *)keyData.mutableBytes;
+        NSDictionary *envelope = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+        NSString *dataHex = WYStr(envelope, @"data");
+        NSString *sigHex  = WYStr(envelope, @"sig");
+        if (!dataHex.length || !sigHex.length) {
+            done(NO, envelope, @"通道未加密");
+            return;
+        }
+        char *pt = NULL;
+        int rc = wy2_open(gSrvEd, rk, dataHex.UTF8String, sigHex.UTF8String, &pt);
+        if (rc != 0) { done(NO, nil, rc == -2 ? @"响应验签失败" : @"响应解密失败"); return; }
+        NSString *plainResp = [NSString stringWithUTF8String:pt];
+        free(pt);
+        NSDictionary *j = [NSJSONSerialization
+                           JSONObjectWithData:[plainResp dataUsingEncoding:NSUTF8StringEncoding]
+                           options:0 error:nil];
+        if (![j isKindOfClass:NSDictionary.class]) { done(NO, nil, @"业务响应解析失败"); return; }
+        done(YES, j, nil);
+    }] resume];
+}
+
+/* 从字面 code/msg 里取值（公告/更新专用，避开混淆字段名） */
+static NSString *WYLiteralField(NSDictionary *j, NSString *key) {
+    if (![j isKindOfClass:NSDictionary.class]) return @"";
+    id v = j[key];
+    if (!v || v == NSNull.null) return @"";
+    return [v description];
+}
+
+/* 拉公告：成功返回公告正文，没有公告返回 nil */
+static void WYFetchNotice(void (^done)(NSString *text))
+{
+    WYUnsealExt();
+    WYExecRequest(gNoticeId, @"", ^(BOOL ok, NSDictionary *j, NSString *err) {
+        if (!ok || ![j isKindOfClass:NSDictionary.class]) { done(nil); return; }
+
+        NSString *code = WYLiteralField(j, @"code");
+        if (![code isEqualToString:[NSString stringWithUTF8String:gNoticeCode]]) { done(nil); return; }
+
+        NSString *msg = WYLiteralField(j, @"msg");
+        NSString *text = msg;
+        if ([msg hasPrefix:@"{"]) {
+            NSDictionary *mo = [NSJSONSerialization
+                                JSONObjectWithData:[msg dataUsingEncoding:NSUTF8StringEncoding]
+                                options:0 error:nil];
+            if ([mo isKindOfClass:NSDictionary.class] && mo[@"app_gg"]) {
+                text = [mo[@"app_gg"] description];
+            }
+        }
+        if (!text.length || [text isEqualToString:@"{}"] || [text isEqualToString:@"null"]) {
+            done(nil);
+            return;
+        }
+        done(text);
+    });
+}
+
+/* 检查更新：有新版返回 YES 并回填信息 */
+static void WYFetchUpdate(void (^done)(BOOL hasNew, NSString *ver, NSString *note,
+                                       NSString *url, BOOL force))
+{
+    WYUnsealExt();
+    WYExecRequest(gIniId, @"", ^(BOOL ok, NSDictionary *j, NSString *err) {
+        if (!ok || ![j isKindOfClass:NSDictionary.class]) { done(NO, nil, nil, nil, NO); return; }
+
+        NSString *code = WYLiteralField(j, @"code");
+        if (![code isEqualToString:[NSString stringWithUTF8String:gIniCode]]) {
+            done(NO, nil, nil, nil, NO);
+            return;
+        }
+        NSString *msg = WYLiteralField(j, @"msg");
+        NSDictionary *mo = nil;
+        if ([msg hasPrefix:@"{"]) {
+            mo = [NSJSONSerialization
+                  JSONObjectWithData:[msg dataUsingEncoding:NSUTF8StringEncoding]
+                  options:0 error:nil];
+        }
+        if (![mo isKindOfClass:NSDictionary.class]) { done(NO, nil, nil, nil, NO); return; }
+
+        NSString *ver   = mo[@"version"] ? [mo[@"version"] description] : @"";
+        NSString *show  = mo[@"updateshow"] ? [mo[@"updateshow"] description] : @"";
+        NSString *url   = mo[@"updateurl"] ? [mo[@"updateurl"] description] : @"";
+        NSString *must  = mo[@"updatemust"] ? [mo[@"updatemust"] description] : @"n";
+
+        if (!ver.length) { done(NO, nil, nil, nil, NO); return; }
+        if ([ver isEqualToString:[NSString stringWithUTF8String:gAppVer]]) {
+            done(NO, ver, nil, nil, NO);
+            return;
+        }
+        done(YES, ver, show, url, [must isEqualToString:@"y"]);
+    });
+}
 #pragma mark - ========== 门禁控制 ==========
 
 @implementation CGate {
@@ -634,6 +790,7 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
         if (ok) {
             [self hide];
             [self scheduleRevalidate];
+            [self afterAuthorized];
         } else {
             [self clearTicket];
             [self showGateWithMessage:text];
@@ -696,6 +853,67 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 
 #pragma mark 提交
 
+- (void)afterAuthorized {
+    // 授权通过后：拉公告 + 检查更新（失败静默，不阻断使用）
+    __weak typeof(self) weakSelf = self;
+
+    WYFetchNotice(^(NSString *text) {
+        if (!text.length) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIAlertController *a = [UIAlertController
+                alertControllerWithTitle:@"公告" message:text
+                         preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"知道了"
+                                                 style:UIAlertActionStyleDefault handler:nil]];
+            [weakSelf presentOnTop:a];
+        });
+    });
+
+    WYFetchUpdate(^(BOOL hasNew, NSString *ver, NSString *note, NSString *url, BOOL force) {
+        if (!hasNew) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *body = [NSString stringWithFormat:@"发现新版本 %@\n\n%@",
+                              ver ?: @"", (note.length ? note : @"（无说明）")];
+            if (url.length) body = [body stringByAppendingFormat:@"\n\n下载：\n%@", url];
+
+            if (force) {
+                UIAlertController *a = [UIAlertController
+                    alertControllerWithTitle:@"强制更新" message:body
+                             preferredStyle:UIAlertControllerStyleAlert];
+                [a addAction:[UIAlertAction actionWithTitle:@"退出"
+                                                     style:UIAlertActionStyleDestructive
+                                                   handler:^(UIAlertAction *x) { exit(0); }]];
+                [weakSelf presentOnTop:a];
+                return;
+            }
+            UIAlertController *a = [UIAlertController
+                alertControllerWithTitle:@"发现新版本" message:body
+                         preferredStyle:UIAlertControllerStyleAlert];
+            [a addAction:[UIAlertAction actionWithTitle:@"稍后"
+                                                 style:UIAlertActionStyleCancel handler:nil]];
+            if (url.length) {
+                [a addAction:[UIAlertAction actionWithTitle:@"前往下载"
+                                                     style:UIAlertActionStyleDefault
+                                                   handler:^(UIAlertAction *x) {
+                    NSURL *u = [NSURL URLWithString:url];
+                    if (u) [[UIApplication sharedApplication] openURL:u options:@{} completionHandler:nil];
+                }]];
+            }
+            [weakSelf presentOnTop:a];
+        });
+    });
+}
+
+- (void)presentOnTop:(UIViewController *)vc {
+    UIWindow *w = self->_win ?: [UIApplication sharedApplication].keyWindow;
+    UIViewController *root = w.rootViewController;
+    if (!root) return;
+    UIViewController *top = root;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (top.presentedViewController) return;
+    [top presentViewController:vc animated:YES completion:nil];
+}
+
 - (void)lockOut {
     // 环境校验失败：直接终止进程，避免被继续使用
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -732,6 +950,7 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
             self->_card = [card copy];
             [self hide];
             [self scheduleRevalidate];
+            [self afterAuthorized];
         }
     }];
 }
