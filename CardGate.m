@@ -324,7 +324,7 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
         move.path = path;
         move.duration = 16.0 + 5.0 * i;
         move.repeatCount = HUGE_VALF;
-        move.calculatesMode = YES;
+        move.calculationMode = kCAAnimationPaced;
         move.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
         [b addAnimation:move forKey:@"flow"];
 
@@ -639,13 +639,15 @@ static NSString *CodeName(NSInteger code) {
     [_timer invalidate];
     __weak typeof(self) weakSelf = self;
     _timer = [NSTimer scheduledTimerWithTimeInterval:REVALIDATE_SEC repeats:YES block:^(NSTimer *t) {
-        [weakSelf loginCard:weakSelf->_card attempt:0 done:^(BOOL ok, NSString *text) {
+        CGate *strongSelf = weakSelf;
+        if (!strongSelf) return;
+        [strongSelf loginCard:strongSelf->_card attempt:0 done:^(BOOL ok, NSString *text) {
             if (!ok) {
                 NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
                 [d removeObjectForKey:K_EXPIRE];
                 [d synchronize];
                 [t invalidate];
-                [weakSelf show];
+                [strongSelf show];
             }
         }];
     }];
@@ -680,4 +682,6 @@ static void cgate_ctor(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[CGate shared] start]; });
 }
 @end
+
+
 
