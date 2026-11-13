@@ -74,7 +74,7 @@ static void WYInitKeys(void) {
 
 #pragma mark - ========== 单次登录（v2 安全通道）==========
 
-typedef void (^WYDone)(BOOL ok, NSInteger code, NSString *msg, double expire);
+typedef void (^WYDone)(BOOL ok, NSInteger code, NSString *msg, double expire, long long serverTime);
 
 static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
     WYInitKeys();
@@ -98,7 +98,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
     memset(respKey, 0, 32);
     if (wy2_seal(gSrvX, gLicPub, gLicCli, WY_APPKEY, plain.UTF8String, card.UTF8String,
                  &frame, respKey) != 0) {
-        done(NO, -1, @"安全通道初始化失败", 0);
+        done(NO, -1, @"安全通道初始化失败", 0, 0);
         return;
     }
     NSString *body = [NSString stringWithUTF8String:frame];
@@ -114,9 +114,9 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        if (e || !d.length) { done(NO, -1, @"网络错误", 0); return; }
+        if (e || !d.length) { done(NO, -1, @"网络错误", 0, 0); return; }
         NSString *raw = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
-        if (!raw) { done(NO, -1, @"响应编码异常", 0); return; }
+        if (!raw) { done(NO, -1, @"响应编码异常", 0, 0); return; }
 
         // 取信封字段
         NSDictionary *envelope = [NSJSONSerialization
@@ -126,14 +126,14 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
         if (!dataHex.length || !sigHex.length) {
             // 未走安全信封（通常是配置/密钥不匹配）
             NSString *msg = WYStr(envelope, F_MSG);
-            done(NO, [WYStr(envelope, F_CODE) integerValue], msg.length ? msg : @"通道未加密", 0);
+            done(NO, [WYStr(envelope, F_CODE) integerValue], msg.length ? msg : @"通道未加密", 0, 0);
             return;
         }
 
         char *pt = NULL;
         int rc = wy2_open(gSrvEd, respKey, dataHex.UTF8String, sigHex.UTF8String, &pt);
         if (rc != 0) {
-            done(NO, -2, rc == -2 ? @"响应验签失败" : @"响应解密失败", 0);
+            done(NO, -2, rc == -2 ? @"响应验签失败" : @"响应解密失败", 0, 0);
             return;
         }
         NSString *plainResp = [NSString stringWithUTF8String:pt];
@@ -141,7 +141,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
         NSData *jd = [plainResp dataUsingEncoding:NSUTF8StringEncoding];
         NSDictionary *j = [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil];
-        if (![j isKindOfClass:NSDictionary.class]) { done(NO, -3, @"业务响应解析失败", 0); return; }
+        if (![j isKindOfClass:NSDictionary.class]) { done(NO, -3, @"业务响应解析失败", 0, 0); return; }
 
         NSInteger code = [WYStr(j, F_CODE) integerValue];
         NSString *msg  = WYStr(j, F_MSG);
@@ -159,7 +159,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
             if (vip.length) expire = [vip doubleValue];
             if (W_VAL.length) {
                 NSString *got = WYStr(inner, W_KEY);
-                if (![got isEqualToString:W_VAL]) { done(NO, -4, @"响应校验失败", 0); return; }
+                if (![got isEqualToString:W_VAL]) { done(NO, -4, @"响应校验失败", 0, 0); return; }
             }
         }
         if (!expire) {
@@ -174,7 +174,8 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
                 expire = [[NSDate date] timeIntervalSince1970] + 3600;
             }
         }
-        done(YES, code, msg, expire);
+        long long srvTime = [WYStr(j, F_TIME) longLongValue];
+        done(YES, code, msg, expire, srvTime);
     }] resume];
 }
 
@@ -290,23 +291,22 @@ static NSString *CodeName(NSInteger code) {
 }
 
 - (void)loginCard:(NSString *)card attempt:(int)attempt done:(void (^)(BOOL, NSString *))done {
-    WYLoginOnce(card, gTimeOffset, ^(BOOL netok, NSInteger code, NSString *msg, double expire) {
+    WYLoginOnce(card, gTimeOffset, ^(BOOL netok, NSInteger code, NSString *msg, double expire, long long serverTime) {
         if (!netok) { done(NO, msg.length ? msg : @"网络错误"); return; }
 
-        // 时间偏差：用服务器时间来校正后重试一次
-        if ([[NSString stringWithFormat:@"%ld", (long)code] isEqualToString:CODE_BADTIME] && attempt < 1) {
-            NSString *tm = nil;
-            // 服务器时间从业务响应拿不到时，简单加 1 分钟再试
-            (void)tm;
-            gTimeOffset += 60;
+        // 服务器报「系统时间出错」：用响应里的服务器时间精确校正，再试一次
+        if (code == 105 && attempt < 1) {
+            long long local = (long long)[[NSDate date] timeIntervalSince1970];
+            long long off = (serverTime > 0) ? (serverTime - local) : 60;
+            gTimeOffset = off;
             [self loginCard:card attempt:attempt + 1 done:done];
             return;
         }
 
-        NSString *codeStr = [NSString stringWithFormat:@"%ld", (long)code];
-        if (![codeStr isEqualToString:CODE_OK]) {
+        if (code != 2416) {
             NSString *name = CodeName(code);
-            NSString *show = msg.length ? msg : (name ?: [NSString stringWithFormat:@"登录失败(%ld)", (long)code]);
+            NSString *show = msg.length ? msg
+                : (name ?: [NSString stringWithFormat:@"登录失败(%ld)", (long)code]);
             done(NO, show);
             return;
         }
@@ -359,4 +359,6 @@ static void cgate_ctor(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[CGate shared] start]; });
 }
 @end
+
+
 
