@@ -684,11 +684,12 @@ static void WYFetchNotice(void (^done)(NSString *text))
                 text = [mo[@"app_gg"] description];
             }
         }
-        if (!text.length || [text isEqualToString:@"{}"] || [text isEqualToString:@"null"]) {
-            done(nil);
-            return;
-        }
-        done(text);
+        // 过滤后台的占位内容，避免每次登录都弹
+        NSArray *placeholders = @[@"", @"{}", @"null", @"暂无", @"无", @"-", @"（无）"];
+        NSString *trimmed = [text stringByTrimmingCharactersInSet:
+                             [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if ([placeholders containsObject:trimmed]) { done(nil); return; }
+        done(trimmed);
     });
 }
 
