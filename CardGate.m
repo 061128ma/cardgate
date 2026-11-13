@@ -115,6 +115,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
     [[[NSURLSession sharedSession] dataTaskWithRequest:req
         completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
         if (e || !d.length) { done(NO, -1, @"网络错误", 0, 0); return; }
+        uint8_t *rk = (uint8_t *)keyData.mutableBytes;   // 引用 keyData，保证 block 期间内存存活
         NSString *raw = [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
         if (!raw) { done(NO, -1, @"响应编码异常", 0, 0); return; }
 
@@ -131,7 +132,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
         }
 
         char *pt = NULL;
-        int rc = wy2_open(gSrvEd, respKey, dataHex.UTF8String, sigHex.UTF8String, &pt);
+        int rc = wy2_open(gSrvEd, rk, dataHex.UTF8String, sigHex.UTF8String, &pt);
         if (rc != 0) {
             done(NO, -2, rc == -2 ? @"响应验签失败" : @"响应解密失败", 0, 0);
             return;
@@ -292,6 +293,11 @@ static NSString *CodeName(NSInteger code) {
 
 - (void)loginCard:(NSString *)card attempt:(int)attempt done:(void (^)(BOOL, NSString *))done {
     WYLoginOnce(card, gTimeOffset, ^(BOOL netok, NSInteger code, NSString *msg, double expire, long long serverTime) {
+        // 验签/解密失败：可能是单次密钥生命周期异常，重试一次
+        if (!netok && (code == -2 || code == -3) && attempt < 1) {
+            [self loginCard:card attempt:attempt + 1 done:done];
+            return;
+        }
         if (!netok) { done(NO, msg.length ? msg : @"网络错误"); return; }
 
         // 服务器报「系统时间出错」：用响应里的服务器时间精确校正，再试一次
@@ -359,6 +365,8 @@ static void cgate_ctor(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[CGate shared] start]; });
 }
 @end
+
+
 
 
 
