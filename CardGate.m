@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  CardGate.m —— 卡密门禁 dylib（微验 动态密钥 v2）
 //  安全通道：X25519 协商 → HKDF-SHA256 → ChaCha20-Poly1305 → Ed25519 验签
 //  编译：clang -target arm64-apple-ios14.0（GitHub Actions 已配好）
@@ -92,7 +92,10 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
                        WY_LOGIN_ID, card, mark, T, sign, valueStr];
 
     char *frame = NULL;
-    uint8_t respKey[32] = {0};
+    // block 不能捕获数组，用 NSMutableData 持有内存，并由 block 强引用保证生命周期
+    NSMutableData *keyData = [NSMutableData dataWithLength:32];
+    uint8_t *respKey = (uint8_t *)keyData.mutableBytes;
+    memset(respKey, 0, 32);
     if (wy2_seal(gSrvX, gLicPub, gLicCli, WY_APPKEY, plain.UTF8String, card.UTF8String,
                  &frame, respKey) != 0) {
         done(NO, -1, @"安全通道初始化失败", 0);
@@ -356,3 +359,4 @@ static void cgate_ctor(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[CGate shared] start]; });
 }
 @end
+
