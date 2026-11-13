@@ -1,4 +1,4 @@
-name: build
+﻿name: build
 
 on: [push, workflow_dispatch]
 
@@ -48,7 +48,7 @@ jobs:
                 -Wl,-platform_version,ios,14.0,16.5 \
                 -install_name @executable_path/Frameworks/CardGate.dylib \
                 -framework UIKit -framework Foundation -framework CoreGraphics \
-                CardGate.m crypto/wy2.c crypto/tweetnacl.c \
+                CardGate.m crypto/wy2.c crypto/tweetnacl.c crypto/wyguard.c \
                 -o CardGate.dylib
           file CardGate.dylib
           ls -l CardGate.dylib
@@ -59,3 +59,4 @@ jobs:
           name: CardGate-dylib
           path: CardGate.dylib
           if-no-files-found: error
+
