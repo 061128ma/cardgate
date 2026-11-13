@@ -5,6 +5,7 @@
 // ============================================================
 #import <UIKit/UIKit.h>
 #import <CommonCrypto/CommonDigest.h>
+#import <QuartzCore/QuartzCore.h>
 #include "crypto/wy2.h"
 
 #pragma mark - ========== 配置 ==========
@@ -182,16 +183,346 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
 #pragma mark - ========== 门禁 UI ==========
 
-@interface CGate : NSObject <UITextFieldDelegate>
-@property (nonatomic, strong) UIWindow *win;
+static UIImage *CGateLoadMascot(void);   // 前置声明
+
+@interface CGate : NSObject
++ (instancetype)shared;
+- (void)start;
+- (void)show;
+- (void)hide;
+@end
+
+#pragma mark - ========== 背景特效视图 ==========
+
+@interface CGAuroraView : UIView
+@end
+
+@implementation CGAuroraView {
+    CAGradientLayer *_base;
+    NSMutableArray<CAGradientLayer *> *_blobs;
+    CAEmitterLayer *_emitter;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = [UIColor blackColor];
+
+        _base = [CAGradientLayer layer];
+        _base.colors = @[
+            (id)[UIColor colorWithRed:0.04 green:0.06 blue:0.14 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.08 green:0.05 blue:0.22 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.02 green:0.14 blue:0.20 alpha:1].CGColor,
+            (id)[UIColor colorWithRed:0.06 green:0.03 blue:0.10 alpha:1].CGColor
+        ];
+        _base.startPoint = CGPointMake(0.0, 0.0);
+        _base.endPoint = CGPointMake(1.0, 1.0);
+        [self.layer addSublayer:_base];
+
+        // 流动光斑：径向渐变 + 路径动画，形成"液态"流动感
+        _blobs = [NSMutableArray array];
+        NSArray *tints = @[
+            [UIColor colorWithRed:0.20 green:0.55 blue:1.00 alpha:0.55],
+            [UIColor colorWithRed:0.45 green:0.30 blue:1.00 alpha:0.50],
+            [UIColor colorWithRed:0.00 green:0.80 blue:0.85 alpha:0.42],
+            [UIColor colorWithRed:0.95 green:0.35 blue:0.75 alpha:0.38]
+        ];
+        for (int i = 0; i < tints.count; i++) {
+            CAGradientLayer *b = [CAGradientLayer layer];
+            b.type = kCAGradientLayerRadial;
+            UIColor *c = tints[i];
+            b.colors = @[
+                (id)[c colorWithAlphaComponent:0.85].CGColor,
+                (id)[c colorWithAlphaComponent:0.0].CGColor
+            ];
+            b.locations = @[@0.0, @1.0];
+            [self.layer addSublayer:b];
+            [_blobs addObject:b];
+        }
+
+        // 漂浮粒子
+        _emitter = [CAEmitterLayer layer];
+        _emitter.emitterShape = kCAEmitterLayerRectangle;
+        _emitter.emitterMode = kCAEmitterLayerVolume;
+        _emitter.renderMode = kCAEmitterLayerAdditive;
+
+        CAEmitterCell *cell = [CAEmitterCell emitterCell];
+        cell.contents = (id)[CGAuroraView dotImage].CGImage;
+        cell.birthRate = 14;
+        cell.lifetime = 9;
+        cell.lifetimeRange = 3;
+        cell.velocity = 16;
+        cell.velocityRange = 12;
+        cell.emissionRange = M_PI * 2;
+        cell.scale = 0.35;
+        cell.scaleRange = 0.25;
+        cell.alphaSpeed = -0.10;
+        cell.color = [UIColor colorWithRed:0.65 green:0.85 blue:1.0 alpha:0.55].CGColor;
+        _emitter.emitterCells = @[cell];
+        [self.layer addSublayer:_emitter];
+    }
+    return self;
+}
+
++ (UIImage *)dotImage {
+    static UIImage *img;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        CGFloat s = 12;
+        UIGraphicsBeginImageContextWithOptions(CGSizeMake(s, s), NO, 0);
+        CGContextRef ctx = UIGraphicsGetCurrentContext();
+        CGContextSetFillColorWithColor(ctx, [UIColor whiteColor].CGColor);
+        CGContextFillEllipseInRect(ctx, CGRectMake(0, 0, s, s));
+        img = UIGraphicsGetImageFromCurrentImageContext();
+        UIGraphicsEndImageContext();
+    });
+    return img;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+
+    _base.frame = self.bounds;
+
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    CGFloat base = MAX(w, h);
+    for (int i = 0; i < _blobs.count; i++) {
+        CAGradientLayer *b = _blobs[i];
+        CGFloat r = base * (0.42 + 0.12 * i);
+        b.bounds = CGRectMake(0, 0, r, r);
+        b.cornerRadius = r * 0.5;
+    }
+    _emitter.emitterPosition = CGPointMake(w * 0.5, h * 0.95);
+    _emitter.emitterSize = CGSizeMake(w, h * 0.2);
+
+    [CATransaction commit];
+
+    [self restartBlobAnimations];
+}
+
+- (void)restartBlobAnimations {
+    CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+    for (int i = 0; i < _blobs.count; i++) {
+        CAGradientLayer *b = _blobs[i];
+        [b removeAllAnimations];
+
+        CGPoint pts[4] = {
+            CGPointMake(w * (0.22 + 0.18 * i), h * (0.30 + 0.10 * i)),
+            CGPointMake(w * (0.78 - 0.12 * i), h * (0.40 + 0.16 * i)),
+            CGPointMake(w * (0.62 - 0.20 * i), h * (0.80 - 0.08 * i)),
+            CGPointMake(w * (0.18 + 0.22 * i), h * (0.62 + 0.20 * i))
+        };
+        CGMutablePathRef path = CGPathCreateMutable();
+        CGPathMoveToPoint(path, NULL, pts[0].x, pts[0].y);
+        for (int k = 1; k < 4; k++) CGPathAddLineToPoint(path, NULL, pts[k].x, pts[k].y);
+        CGPathCloseSubpath(path);
+
+        CAKeyframeAnimation *move = [CAKeyframeAnimation animationWithKeyPath:@"position"];
+        move.path = path;
+        move.duration = 16.0 + 5.0 * i;
+        move.repeatCount = HUGE_VALF;
+        move.calculatesMode = YES;
+        move.timingFunction = [CAMediaTimingFunction functionWithName:kCAMediaTimingFunctionEaseInEaseOut];
+        [b addAnimation:move forKey:@"flow"];
+
+        CABasicAnimation *pulse = [CABasicAnimation animationWithKeyPath:@"transform.scale"];
+        pulse.fromValue = @0.92;
+        pulse.toValue = @1.14;
+        pulse.duration = 6.0 + i;
+        pulse.autoreverses = YES;
+        pulse.repeatCount = HUGE_VALF;
+        [b addAnimation:pulse forKey:@"pulse"];
+
+        CGPathRelease(path);
+    }
+}
+
+@end
+
+#pragma mark - ========== 登录界面（横竖屏自适应）==========
+
+@interface CGGateVC : UIViewController
+@property (nonatomic, copy) void (^onSubmit)(NSString *card);
 @property (nonatomic, strong) UITextField *field;
 @property (nonatomic, strong) UILabel *msg;
 @property (nonatomic, strong) UIButton *btn;
-@property (nonatomic, copy) NSString *card;
-@property (nonatomic, strong) NSTimer *timer;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UIImageView *mascot;
+@property (nonatomic, strong) UIVisualEffectView *panel;
 @end
 
-@implementation CGate
+@implementation CGGateVC
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor blackColor];
+
+    CGAuroraView *bg = [[CGAuroraView alloc] initWithFrame:self.view.bounds];
+    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:bg];
+
+    // 液态玻璃面板
+    UIVisualEffectView *panel = [[UIVisualEffectView alloc]
+        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark]];
+    panel.layer.cornerRadius = 26;
+    panel.layer.masksToBounds = YES;
+    panel.layer.borderWidth = 1.0;
+    panel.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.18].CGColor;
+    [self.view addSubview:panel];
+    self.panel = panel;
+
+    UIView *content = panel.contentView;
+
+    self.titleLabel = [UILabel new];
+    self.titleLabel.text = @"卡密登录";
+    self.titleLabel.textColor = [UIColor whiteColor];
+    self.titleLabel.font = [UIFont systemFontOfSize:28 weight:UIFontWeightSemibold];
+    self.titleLabel.textAlignment = NSTextAlignmentCenter;
+    self.titleLabel.layer.shadowColor = [UIColor colorWithRed:0.4 green:0.8 blue:1 alpha:1].CGColor;
+    self.titleLabel.layer.shadowOpacity = 0.6;
+    self.titleLabel.layer.shadowRadius = 10;
+    self.titleLabel.layer.shadowOffset = CGSizeZero;
+    [content addSubview:self.titleLabel];
+
+    self.mascot = [UIImageView new];
+    self.mascot.contentMode = UIViewContentModeScaleAspectFit;
+    self.mascot.image = CGateLoadMascot();
+    self.mascot.hidden = (self.mascot.image == nil);
+    [self.view addSubview:self.mascot];
+
+    self.field = [UITextField new];
+    self.field.placeholder = @"请输入卡密";
+    self.field.backgroundColor = [UIColor colorWithWhite:1 alpha:0.10];
+    self.field.textColor = [UIColor whiteColor];
+    self.field.layer.cornerRadius = 14;
+    self.field.layer.borderWidth = 1;
+    self.field.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.20].CGColor;
+    self.field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
+    self.field.autocorrectionType = UITextAutocorrectionTypeNo;
+    self.field.returnKeyType = UIReturnKeyGo;
+    self.field.keyboardType = UIKeyboardTypeASCIICapable;
+    [self.field setAttributedPlaceholder:
+        [[NSAttributedString alloc] initWithString:@"请输入卡密"
+                                        attributes:@{NSForegroundColorAttributeName:
+                                                     [UIColor colorWithWhite:1 alpha:0.45]}]];
+    [self.field addTarget:self action:@selector(submit) forControlEvents:UIControlEventEditingDidEndOnExit];
+    [content addSubview:self.field];
+
+    self.btn = [UIButton buttonWithType:UIButtonTypeSystem];
+    [self.btn setTitle:@"登 录" forState:UIControlStateNormal];
+    [self.btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    self.btn.titleLabel.font = [UIFont systemFontOfSize:19 weight:UIFontWeightSemibold];
+    self.btn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.16];
+    self.btn.layer.cornerRadius = 14;
+    self.btn.layer.borderWidth = 1;
+    self.btn.layer.borderColor = [UIColor colorWithWhite:1 alpha:0.26].CGColor;
+    [self.btn addTarget:self action:@selector(submit) forControlEvents:UIControlEventTouchUpInside];
+    [content addSubview:self.btn];
+
+    self.msg = [UILabel new];
+    self.msg.textColor = [UIColor colorWithRed:1 green:0.55 blue:0.55 alpha:1];
+    self.msg.font = [UIFont systemFontOfSize:14];
+    self.msg.textAlignment = NSTextAlignmentCenter;
+    self.msg.numberOfLines = 2;
+    [content addSubview:self.msg];
+
+    [self startMascotBobbing];
+}
+
+- (void)startMascotBobbing {
+    if (self.mascot.hidden) return;
+    self.mascot.transform = CGAffineTransformIdentity;
+    [UIView animateWithDuration:1.8 delay:0
+                        options:UIViewAnimationOptionAutoreverse | UIViewAnimationOptionRepeat |
+                                UIViewAnimationOptionCurveEaseInOut
+                     animations:^{
+        self.mascot.transform = CGAffineTransformMakeTranslation(0, -14);
+    } completion:nil];
+}
+
+- (void)submit {
+    if (self.onSubmit) self.onSubmit(self.field.text ?: @"");
+}
+
+// 横竖屏共用的布局：全部按当前 bounds 实时计算
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+
+    CGRect b = self.view.bounds;
+    CGFloat w = b.size.width, h = b.size.height;
+    BOOL landscape = w > h;
+    CGFloat safeTop = 0, safeBottom = 0;
+    if (@available(iOS 11.0, *)) {
+        safeTop = self.view.safeAreaInsets.top;
+        safeBottom = self.view.safeAreaInsets.bottom;
+    }
+
+    CGFloat panelW = landscape ? MIN(w * 0.62, 560) : MIN(w - 48, 460);
+    CGFloat rowH = landscape ? 44 : 50;
+    CGFloat gap = landscape ? 14 : 18;
+    CGFloat titleH = landscape ? 40 : 46;
+    CGFloat msgH = 40;
+    CGFloat panelH = titleH + gap + rowH + gap + rowH + gap + msgH + (landscape ? 40 : 56);
+
+    CGFloat panelX = (w - panelW) * 0.5;
+    CGFloat panelY = (h - panelH) * 0.5 + (landscape ? 0 : MIN(40, h * 0.04));
+    self.panel.frame = CGRectMake(panelX, panelY, panelW, panelH);
+
+    CGFloat padX = 24;
+    CGFloat innerW = panelW - padX * 2;
+    CGFloat y = landscape ? 22 : 30;
+
+    self.titleLabel.frame = CGRectMake(padX, y, innerW, titleH);
+    y += titleH + gap;
+
+    self.field.frame = CGRectMake(padX, y, innerW, rowH);
+    y += rowH + gap;
+
+    self.btn.frame = CGRectMake(padX, y, innerW, rowH);
+    y += rowH + gap;
+
+    self.msg.frame = CGRectMake(padX, y, innerW, msgH);
+
+    // 吉祥物：竖屏放在面板上方，横屏放在左侧空白区
+    if (!self.mascot.hidden) {
+        CGFloat side = landscape ? MIN(h * 0.52, 240) : MIN(w * 0.42, 180);
+        CGFloat mx, my;
+        if (landscape) {
+            mx = panelX - side - 28;
+            if (mx < 12) mx = 12;
+            my = (h - side) * 0.5;
+        } else {
+            mx = (w - side) * 0.5;
+            my = panelY - side - (safeTop > 0 ? 6 : 14);
+            if (my < safeTop + 8) my = safeTop + 8;
+        }
+        self.mascot.frame = CGRectMake(mx, my, side, side);
+    }
+
+    // 输入框左内边距
+    UIView *lv = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, rowH)];
+    self.field.leftView = lv;
+    self.field.leftViewMode = UITextFieldViewModeAlways;
+
+    (void)safeBottom;
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+- (BOOL)prefersStatusBarHidden { return NO; }
+
+@end
+
+#pragma mark - ========== 门禁控制 ==========
+
+@implementation CGate {
+    UIWindow *_win;
+    CGGateVC *_vc;
+    NSString *_card;
+    NSTimer *_timer;
+}
 
 + (instancetype)shared {
     static CGate *g; static dispatch_once_t once;
@@ -204,7 +535,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
     NSString *card = [d stringForKey:K_CARD];
     double exp = [d doubleForKey:K_EXPIRE];
     if (card.length && exp > [[NSDate date] timeIntervalSince1970]) {
-        self.card = card;
+        _card = [card copy];
         [self scheduleRevalidate];
         return;
     }
@@ -213,69 +544,45 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
 - (void)show {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self.win) { [self.win setHidden:NO]; [self.win makeKeyAndVisible]; return; }
+        if (self->_win) {
+            [self->_win setHidden:NO];
+            [self->_win makeKeyAndVisible];
+            return;
+        }
         CGRect scr = [UIScreen mainScreen].bounds;
-        self.win = [[UIWindow alloc] initWithFrame:scr];
-        self.win.windowLevel = UIWindowLevelAlert + 10;
-        self.win.backgroundColor = [UIColor colorWithWhite:0 alpha:0.92];
+        self->_win = [[UIWindow alloc] initWithFrame:scr];
+        self->_win.windowLevel = UIWindowLevelAlert + 10;
+        self->_win.backgroundColor = [UIColor blackColor];
 
-        UIViewController *vc = [UIViewController new];
-        self.win.rootViewController = vc;
-        CGFloat w = scr.size.width - 48;
-
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(24, scr.size.height/2 - 150, w, 34)];
-        title.text = @"卡密登录";
-        title.textColor = UIColor.whiteColor;
-        title.font = [UIFont boldSystemFontOfSize:24];
-        title.textAlignment = NSTextAlignmentCenter;
-        [vc.view addSubview:title];
-
-        self.field = [[UITextField alloc] initWithFrame:CGRectMake(24, scr.size.height/2 - 100, w, 48)];
-        self.field.placeholder = @"请输入卡密";
-        self.field.backgroundColor = [UIColor colorWithWhite:1 alpha:0.10];
-        self.field.textColor = UIColor.whiteColor;
-        self.field.layer.cornerRadius = 12;
-        self.field.autocapitalizationType = UITextAutocapitalizationTypeAllCharacters;
-        self.field.autocorrectionType = UITextAutocorrectionTypeNo;
-        self.field.delegate = self;
-        UIView *pad = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 12, 48)];
-        self.field.leftView = pad;
-        self.field.leftViewMode = UITextFieldViewModeAlways;
-        [vc.view addSubview:self.field];
-
-        self.btn = [UIButton buttonWithType:UIButtonTypeSystem];
-        self.btn.frame = CGRectMake(24, scr.size.height/2 - 40, w, 48);
-        [self.btn setTitle:@"登录" forState:UIControlStateNormal];
-        self.btn.backgroundColor = [UIColor colorWithWhite:1 alpha:0.18];
-        self.btn.layer.cornerRadius = 12;
-        [self.btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-        [self.btn addTarget:self action:@selector(submit) forControlEvents:UIControlEventTouchUpInside];
-        [vc.view addSubview:self.btn];
-
-        self.msg = [[UILabel alloc] initWithFrame:CGRectMake(24, scr.size.height/2 + 16, w, 24)];
-        self.msg.textColor = [UIColor colorWithRed:1 green:0.45 blue:0.45 alpha:1];
-        self.msg.textAlignment = NSTextAlignmentCenter;
-        self.msg.font = [UIFont systemFontOfSize:14];
-        [vc.view addSubview:self.msg];
-
-        [self.win makeKeyAndVisible];
+        CGGateVC *vc = [CGGateVC new];
+        __weak typeof(self) weakSelf = self;
+        vc.onSubmit = ^(NSString *card) { [weakSelf handleSubmit:card]; };
+        self->_vc = vc;
+        self->_win.rootViewController = vc;
+        [self->_win makeKeyAndVisible];
     });
 }
 
 - (void)hide {
-    dispatch_async(dispatch_get_main_queue(), ^{ [self.win setHidden:YES]; });
+    dispatch_async(dispatch_get_main_queue(), ^{ [self->_win setHidden:YES]; });
 }
 
-- (void)submit {
-    NSString *card = [self.field.text stringByTrimmingCharactersInSet:
+- (void)handleSubmit:(NSString *)raw {
+    NSString *card = [raw stringByTrimmingCharactersInSet:
                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (!card.length) { self.msg.text = @"请输入卡密"; return; }
-    self.btn.enabled = NO;
-    self.msg.text = @"登录中…";
+    if (!card.length) { _vc.msg.text = @"请输入卡密"; return; }
+    _vc.btn.enabled = NO;
+    _vc.msg.text = @"登录中…";
     [self loginCard:card attempt:0 done:^(BOOL ok, NSString *text) {
-        self.btn.enabled = YES;
-        self.msg.text = text;
-        if (ok) { self.card = card; [self hide]; [self scheduleRevalidate]; }
+        self->_vc.btn.enabled = YES;
+        self->_vc.msg.text = text;
+        self->_vc.msg.textColor = ok ? [UIColor colorWithRed:0.55 green:1 blue:0.75 alpha:1]
+                                     : [UIColor colorWithRed:1 green:0.55 blue:0.55 alpha:1];
+        if (ok) {
+            self->_card = [card copy];
+            [self hide];
+            [self scheduleRevalidate];
+        }
     }];
 }
 
@@ -293,49 +600,46 @@ static NSString *CodeName(NSInteger code) {
 
 - (void)loginCard:(NSString *)card attempt:(int)attempt done:(void (^)(BOOL, NSString *))done {
     WYLoginOnce(card, gTimeOffset, ^(BOOL netok, NSInteger code, NSString *msg, double expire, long long serverTime) {
-        // 验签/解密失败：可能是单次密钥生命周期异常，重试一次
         if (!netok && (code == -2 || code == -3) && attempt < 1) {
             [self loginCard:card attempt:attempt + 1 done:done];
             return;
         }
         if (!netok) { done(NO, msg.length ? msg : @"网络错误"); return; }
 
-        // 服务器报「系统时间出错」：用响应里的服务器时间精确校正，再试一次
         if (code == 105 && attempt < 1) {
             long long local = (long long)[[NSDate date] timeIntervalSince1970];
-            long long off = (serverTime > 0) ? (serverTime - local) : 60;
-            gTimeOffset = off;
+            gTimeOffset = (serverTime > 0) ? (serverTime - local) : 60;
             [self loginCard:card attempt:attempt + 1 done:done];
             return;
         }
 
         if (code != 2416) {
             NSString *name = CodeName(code);
-            NSString *show = msg.length ? msg
-                : (name ?: [NSString stringWithFormat:@"登录失败(%ld)", (long)code]);
-            done(NO, show);
+            done(NO, msg.length ? msg
+                 : (name ?: [NSString stringWithFormat:@"登录失败(%ld)", (long)code]));
             return;
         }
 
-        if (expire <= 0) expire = [[NSDate date] timeIntervalSince1970] + 3600;
+        double exp = expire;
+        if (exp <= 0) exp = [[NSDate date] timeIntervalSince1970] + 3600;
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
         [d setObject:card forKey:K_CARD];
-        [d setDouble:expire forKey:K_EXPIRE];
+        [d setDouble:exp forKey:K_EXPIRE];
         [d synchronize];
 
         NSDateFormatter *df = [NSDateFormatter new];
         df.dateFormat = @"yyyy-MM-dd HH:mm";
-        done(YES, [NSString stringWithFormat:@"登录成功，到期 %@",
-                   [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:expire]]]);
+        done(YES, [NSString stringWithFormat:@"登录成功\n到期 %@",
+                   [df stringFromDate:[NSDate dateWithTimeIntervalSince1970:exp]]]);
     });
 }
 
 - (void)scheduleRevalidate {
-    if (REVALIDATE_SEC <= 0 || !self.card.length) return;
-    [self.timer invalidate];
+    if (REVALIDATE_SEC <= 0 || !_card.length) return;
+    [_timer invalidate];
     __weak typeof(self) weakSelf = self;
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:REVALIDATE_SEC repeats:YES block:^(NSTimer *t) {
-        [weakSelf loginCard:weakSelf.card attempt:0 done:^(BOOL ok, NSString *text) {
+    _timer = [NSTimer scheduledTimerWithTimeInterval:REVALIDATE_SEC repeats:YES block:^(NSTimer *t) {
+        [weakSelf loginCard:weakSelf->_card attempt:0 done:^(BOOL ok, NSString *text) {
             if (!ok) {
                 NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
                 [d removeObjectForKey:K_EXPIRE];
@@ -347,11 +651,22 @@ static NSString *CodeName(NSInteger code) {
     }];
 }
 
-- (void)dealloc { [self.timer invalidate]; }
+- (void)dealloc { [_timer invalidate]; }
 
 @end
 
-#pragma mark - ========== 入口（constructor + +load 双保险）==========
+#pragma mark - ========== 吉祥物加载 ==========
+
+static UIImage *CGateLoadMascot(void) {
+    NSArray *names = @[@"NaiLong@3x", @"NaiLong@2x", @"NaiLong", @"nailong", @"Mascot"];
+    for (NSString *n in names) {
+        NSString *p = [[NSBundle mainBundle] pathForResource:n ofType:@"png"];
+        if (p) return [UIImage imageWithContentsOfFile:p];
+    }
+    return nil;
+}
+
+#pragma mark - ========== 入口 ==========
 
 __attribute__((constructor))
 static void cgate_ctor(void) {
@@ -365,8 +680,4 @@ static void cgate_ctor(void) {
     dispatch_async(dispatch_get_main_queue(), ^{ [[CGate shared] start]; });
 }
 @end
-
-
-
-
 
