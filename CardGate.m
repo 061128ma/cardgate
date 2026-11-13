@@ -8,36 +8,62 @@
 #import <QuartzCore/QuartzCore.h>
 #include "crypto/wy2.h"
 
-#pragma mark - ========== 配置 ==========
+#pragma mark - ========== 配置（密文，运行时解密）==========
 
-static const char *WY_HOST     = "wy.llua.cn";
-static const char *WY_APITOKRN = "992664d2b407c0f899284d7d5c0df89a";
-static const char *WY_APPKEY   = "S0ZyYe9JJypNRRSY";
-static const char *WY_LOGIN_ID = "8EE5C3CDF";
+#include "crypto/wyguard.h"
+#include "crypto/sealed.h"
 
-// 通道公钥 / 绑定密钥对（来自微验后台）
-static const char *WY_SRV_X25519 = "2fc060d1a94db93817765b2f8d79e083dd24963aa1266428c9e619ace7426103";
-static const char *WY_SRV_ED25519 = "97a8a1c13919f437fade2c27d2b0ccdefa74ed1532ff82029eb4e7aa754a9f01";
-static const char *WY_LIC_PUB = "b88f2bb3257985e0f192324dcb9dbf05f39ec065b2ccdc0dcecf8d0f13f1272e";
-static const char *WY_LIC_CLI = "9dd3d639dd59172726c6a44f936d411956de680b5a6e6ce0ef9fdf3b5337f5cb";
+/* 解密后的工作缓冲区 */
+static char gHost[64], gToken[64], gAppKey[64], gLoginId[32];
+static char gSrvXHex[96], gSrvEdHex[96], gLicPubHex[96], gLicCliHex[96];
+static char gFCode[64], gFMsg[64], gFTime[64], gFVip[64], gWKey[64], gWVal[64], gOkCode[16];
 
-// 响应字段名（后台混淆）
-static NSString *const F_CODE = @"f891012afe301f1ed6b0d65d77ed68c62";
-static NSString *const F_MSG  = @"hd975c61e883e0fa83443c2e39bb959ec";
-static NSString *const F_TIME = @"bf921c5bf4325e0cea243fb1e89424921";
-static NSString *const F_VIP  = @"ff097bcdf608ccbf49dbdb114df1e2534";
-static NSString *const W_KEY  = @"wbc0a389f8e8127f628d2d25a68ccad4c";
-static NSString *const W_VAL  = @"05b7c29c6dac5855d41167f0ff4a14b3";
+/* 二进制形式 */
+static uint8_t gSrvX[32], gSrvEd[32], gLicPub[32], gLicCli[32];
 
-static NSString *const CODE_OK      = @"2416";   // 登录成功码
-static NSString *const CODE_BADTIME = @"105";    // 系统时间出错
+static dispatch_once_t gSealOnce;
+static int gGuardOK = 0;
+static long long gTimeOffset = 0;
+
+static void WYUnseal(void)
+{
+    dispatch_once(&gSealOnce, ^{
+        wyguard_unseal(SEAL_HOST,    (unsigned char *)gHost,     SEAL_HOST_len,    SEAL_HOST_key);
+        wyguard_unseal(SEAL_TOKEN,   (unsigned char *)gToken,    SEAL_TOKEN_len,   SEAL_TOKEN_key);
+        wyguard_unseal(SEAL_APPKEY,  (unsigned char *)gAppKey,   SEAL_APPKEY_len,  SEAL_APPKEY_key);
+        wyguard_unseal(SEAL_LOGINID, (unsigned char *)gLoginId,  SEAL_LOGINID_len, SEAL_LOGINID_key);
+        wyguard_unseal(SEAL_SRVX,    (unsigned char *)gSrvXHex,  SEAL_SRVX_len,    SEAL_SRVX_key);
+        wyguard_unseal(SEAL_SRVED,   (unsigned char *)gSrvEdHex, SEAL_SRVED_len,   SEAL_SRVED_key);
+        wyguard_unseal(SEAL_LICPUB,  (unsigned char *)gLicPubHex,SEAL_LICPUB_len,  SEAL_LICPUB_key);
+        wyguard_unseal(SEAL_LICCLI,  (unsigned char *)gLicCliHex,SEAL_LICCLI_len,  SEAL_LICCLI_key);
+        wyguard_unseal(SEAL_FCODE,   (unsigned char *)gFCode,    SEAL_FCODE_len,   SEAL_FCODE_key);
+        wyguard_unseal(SEAL_FMSG,    (unsigned char *)gFMsg,     SEAL_FMSG_len,    SEAL_FMSG_key);
+        wyguard_unseal(SEAL_FTIME,   (unsigned char *)gFTime,    SEAL_FTIME_len,   SEAL_FTIME_key);
+        wyguard_unseal(SEAL_FVIP,    (unsigned char *)gFVip,     SEAL_FVIP_len,    SEAL_FVIP_key);
+        wyguard_unseal(SEAL_WKEY,    (unsigned char *)gWKey,     SEAL_WKEY_len,    SEAL_WKEY_key);
+        wyguard_unseal(SEAL_WVAL,    (unsigned char *)gWVal,     SEAL_WVAL_len,    SEAL_WVAL_key);
+        wyguard_unseal(SEAL_OKCODE,  (unsigned char *)gOkCode,   SEAL_OKCODE_len,  SEAL_OKCODE_key);
+
+        wy2_from_hex(gSrvXHex,    gSrvX,    32);
+        wy2_from_hex(gSrvEdHex,   gSrvEd,   32);
+        wy2_from_hex(gLicPubHex,  gLicPub,  32);
+        wy2_from_hex(gLicCliHex,  gLicCli,  32);
+    });
+}
+
+/* ObjC 侧取字段名的便捷函数 */
+static NSString *WYFieldCode(void) { WYUnseal(); return [NSString stringWithUTF8String:gFCode]; }
+static NSString *WYFieldMsg(void)  { WYUnseal(); return [NSString stringWithUTF8String:gFMsg]; }
+static NSString *WYFieldTime(void) { WYUnseal(); return [NSString stringWithUTF8String:gFTime]; }
+static NSString *WYFieldVip(void)  { WYUnseal(); return [NSString stringWithUTF8String:gFVip]; }
+static NSString *WYFieldWKey(void) { WYUnseal(); return [NSString stringWithUTF8String:gWKey]; }
+static NSString *WYFieldWVal(void) { WYUnseal(); return [NSString stringWithUTF8String:gWVal]; }
+static NSString *WYFieldOkCode(void){ WYUnseal(); return [NSString stringWithUTF8String:gOkCode]; }
+static NSString *WYFieldBadTime(void){ return @"105"; }
 
 static NSString *const K_CARD   = @"wy2_card";
 static NSString *const K_EXPIRE = @"wy2_expire";
 static const  int      REVALIDATE_SEC = 120;   // 心跳 2 分钟
-
-static uint8_t gSrvX[32], gSrvEd[32], gLicPub[32], gLicCli[32];
-static long long gTimeOffset = 0;   // 与服务器的时间差（秒）
 
 #pragma mark - ========== 工具 ==========
 
@@ -63,41 +89,32 @@ static NSString *WYStr(NSDictionary *j, NSString *k) {
     return [v description];
 }
 
-static void WYInitKeys(void) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        wy2_from_hex(WY_SRV_X25519, gSrvX, 32);
-        wy2_from_hex(WY_SRV_ED25519, gSrvEd, 32);
-        wy2_from_hex(WY_LIC_PUB, gLicPub, 32);
-        wy2_from_hex(WY_LIC_CLI, gLicCli, 32);
-    });
-}
-
 #pragma mark - ========== 单次登录（v2 安全通道）==========
 
 typedef void (^WYDone)(BOOL ok, NSInteger code, NSString *msg, double expire, long long serverTime);
 
 static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
-    WYInitKeys();
+    WYUnseal();
 
     long long T = (long long)[[NSDate date] timeIntervalSince1970] + timeOffset;
     unsigned value = (unsigned)(100000 + arc4random_uniform(900000));
     NSString *valueStr = [NSString stringWithFormat:@"%lld%u", T, value];
     NSString *mark = WYMarkCode();
 
+    WYUnseal();
     NSString *signSrc = [NSString stringWithFormat:@"kami=%@&markcode=%@&t=%lld&%s",
-                         card, mark, T, WY_APPKEY];
+                         card, mark, T, gAppKey];
     NSString *sign = WYMD5(signSrc);
     NSString *plain = [NSString stringWithFormat:
                        @"id=%s&kami=%@&markcode=%@&t=%lld&sign=%@&value=%@",
-                       WY_LOGIN_ID, card, mark, T, sign, valueStr];
+                       gLoginId, card, mark, T, sign, valueStr];
 
     char *frame = NULL;
     // block 不能捕获数组，用 NSMutableData 持有内存，并由 block 强引用保证生命周期
     NSMutableData *keyData = [NSMutableData dataWithLength:32];
     uint8_t *respKey = (uint8_t *)keyData.mutableBytes;
     memset(respKey, 0, 32);
-    if (wy2_seal(gSrvX, gLicPub, gLicCli, WY_APPKEY, plain.UTF8String, card.UTF8String,
+    if (wy2_seal(gSrvX, gLicPub, gLicCli, gAppKey, plain.UTF8String, card.UTF8String,
                  &frame, respKey) != 0) {
         done(NO, -1, @"安全通道初始化失败", 0, 0);
         return;
@@ -106,7 +123,7 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
     free(frame);
 
     NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://%s/v2/%s",
-                                       WY_HOST, WY_APITOKRN]];
+                                       gHost, gToken]];
     NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
     req.HTTPMethod = @"POST";
     req.timeoutInterval = 20;
@@ -127,8 +144,8 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
         NSString *sigHex  = WYStr(envelope, @"sig");
         if (!dataHex.length || !sigHex.length) {
             // 未走安全信封（通常是配置/密钥不匹配）
-            NSString *msg = WYStr(envelope, F_MSG);
-            done(NO, [WYStr(envelope, F_CODE) integerValue], msg.length ? msg : @"通道未加密", 0, 0);
+            NSString *msg = WYStr(envelope, WYFieldMsg());
+            done(NO, [WYStr(envelope, WYFieldCode()) integerValue], msg.length ? msg : @"通道未加密", 0, 0);
             return;
         }
 
@@ -145,8 +162,8 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
         NSDictionary *j = [NSJSONSerialization JSONObjectWithData:jd options:0 error:nil];
         if (![j isKindOfClass:NSDictionary.class]) { done(NO, -3, @"业务响应解析失败", 0, 0); return; }
 
-        NSInteger code = [WYStr(j, F_CODE) integerValue];
-        NSString *msg  = WYStr(j, F_MSG);
+        NSInteger code = [WYStr(j, WYFieldCode()) integerValue];
+        NSString *msg  = WYStr(j, WYFieldMsg());
 
         // msg 里可能嵌一层 JSON（含 vip / 校验位）
         NSDictionary *inner = nil;
@@ -157,26 +174,26 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
         double expire = 0;
         if ([inner isKindOfClass:NSDictionary.class]) {
-            NSString *vip = WYStr(inner, F_VIP);
+            NSString *vip = WYStr(inner, WYFieldVip());
             if (vip.length) expire = [vip doubleValue];
-            if (W_VAL.length) {
-                NSString *got = WYStr(inner, W_KEY);
-                if (![got isEqualToString:W_VAL]) { done(NO, -4, @"响应校验失败", 0, 0); return; }
+            if (strlen(gWVal) > 0) {
+                NSString *got = WYStr(inner, WYFieldWKey());
+                if (![got isEqualToString:WYFieldWVal()]) { done(NO, -4, @"响应校验失败", 0, 0); return; }
             }
         }
         if (!expire) {
-            NSString *vip = WYStr(j, F_VIP);
+            NSString *vip = WYStr(j, WYFieldVip());
             if (vip.length) expire = [vip doubleValue];
         }
         if (!expire) {
-            NSString *tm = WYStr(j, F_TIME);
+            NSString *tm = WYStr(j, WYFieldTime());
             double v = [tm doubleValue];
             if (v > 1e12) v /= 1000.0;
-            if (v > 0 && [WYStr(j, F_CODE) isEqualToString:CODE_OK]) {
+            if (v > 0 && [WYStr(j, WYFieldCode()) isEqualToString:WYFieldOkCode()]) {
                 expire = [[NSDate date] timeIntervalSince1970] + 3600;
             }
         }
-        long long srvTime = [WYStr(j, F_TIME) longLongValue];
+        long long srvTime = [WYStr(j, WYFieldTime()) longLongValue];
         done(YES, code, msg, expire, srvTime);
     }] resume];
 }
@@ -595,6 +612,14 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 #pragma mark 启动流程
 
 - (void)start {
+    // 运行时自检：反调试 + 依赖链强校验 + 自身镜像
+    WYUnseal();
+    gGuardOK = wyguard_check();
+    if (!gGuardOK) {
+        // 环境被改动（调试器附加 / CardGate 被弱链接化或替换）
+        [self lockOut];
+        return;
+    }
     if (![self hasTicket]) {
         [self showGateWithMessage:nil];
         return;
@@ -671,6 +696,26 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 
 #pragma mark 提交
 
+- (void)lockOut {
+    // 环境校验失败：直接终止进程，避免被继续使用
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSString *msg = @"环境异常，请重新安装";
+        UIAlertController *a = [UIAlertController alertControllerWithTitle:@"无法启动"
+                                                                 message:msg
+                                                          preferredStyle:UIAlertControllerStyleAlert];
+        [a addAction:[UIAlertAction actionWithTitle:@"退出" style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *x) { exit(0); }]];
+        UIWindow *w = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        w.windowLevel = UIWindowLevelAlert + 20;
+        w.rootViewController = [UIViewController new];
+        [w makeKeyAndVisible];
+        [w.rootViewController presentViewController:a animated:YES completion:^{
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{ exit(0); });
+        }];
+    });
+}
+
 - (void)handleSubmit:(NSString *)raw {
     NSString *card = [raw stringByTrimmingCharactersInSet:
                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
@@ -719,7 +764,7 @@ static NSString *CodeName(NSInteger code) {
             return;
         }
 
-        if (code != 2416) {
+        if (code != atol(gOkCode)) {
             NSString *name = CodeName(code);
             done(NO, msg.length ? msg
                  : (name ?: [NSString stringWithFormat:@"登录失败(%ld)", (long)code]));
@@ -764,6 +809,7 @@ static NSString *CodeName(NSInteger code) {
 }
 
 - (void)silentRevalidate {
+    if (!wyguard_check_fast()) { [self lockOut]; return; }
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSString *card = [d stringForKey:K_CARD] ?: _card;
     if (!card.length) { [self showGateWithMessage:nil]; return; }
