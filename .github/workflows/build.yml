@@ -4,33 +4,42 @@ on: [push, workflow_dispatch]
 
 jobs:
   dylib:
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 ldid
-        run: brew install ldid dpkg xz || brew install ldid
-
-      - name: 部署 Theos 与 SDK
+      - name: 安装编译工具
         run: |
-          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
-          mkdir -p "$HOME/theos/sdks"
-          curl -L -o /tmp/sdks.tar.xz https://github.com/theos/sdks/releases/latest/download/sdks.tar.xz
-          tar -xf /tmp/sdks.tar.xz -C "$HOME/theos/sdks"
-          ls "$HOME/theos/sdks"
-          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld xz-utils curl file
 
-      - name: 编译
+      - name: 下载 iOS SDK
         run: |
-          make clean || true
-          make -j2
-          find . -name '*.dylib' -print
+          mkdir -p "$HOME/sdks"
+          curl -L -o /tmp/sdk.tar.xz https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+          tar -xf /tmp/sdk.tar.xz -C "$HOME/sdks"
+          ls "$HOME/sdks"
+          echo "SDKROOT=$HOME/sdks/iPhoneOS16.5.sdk" >> "$GITHUB_ENV"
+
+      - name: 编译 CardGate.dylib
+        run: |
+          clang --version
+          clang -target arm64-apple-ios14.0 \
+                -isysroot "$SDKROOT" \
+                -fobjc-arc -fmodules -O2 \
+                -dynamiclib \
+                -fuse-ld=lld \
+                -Wl,-undefined,dynamic_lookup \
+                -Wl,-platform_version,ios,14.0,16.5 \
+                -install_name @executable_path/Frameworks/CardGate.dylib \
+                -framework UIKit -framework Foundation -framework CoreGraphics \
+                -o CardGate.dylib CardGate.m
+          file CardGate.dylib
+          ls -l CardGate.dylib
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: CardGate-dylib
-          path: |
-            .theos/obj/**/*.dylib
-            packages/**/*.deb
+          path: CardGate.dylib
           if-no-files-found: error
