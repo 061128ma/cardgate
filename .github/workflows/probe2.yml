@@ -1,0 +1,7 @@
+name: probe2
+on: [workflow_dispatch]
+jobs:
+  t:
+    runs-on: macos-14
+    steps:
+      - run: echo hello-macos
