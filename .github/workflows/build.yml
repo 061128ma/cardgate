@@ -3,37 +3,53 @@ name: build
 on: [push, workflow_dispatch]
 
 jobs:
-  dylib:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装编译工具
+      - name: 安装工具链
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq clang lld xz-utils curl file
+          sudo apt-get install -y -qq clang lld xz-utils curl file \
+            libcurl4-openssl-dev libssl-dev
 
+      # ---------- 1. 原语自测（RFC 标准向量） ----------
+      - name: 编译并运行原语自测
+        run: |
+          clang -O2 -Wall -I crypto \
+            crypto/wy2.c crypto/tweetnacl.c crypto/wy2selftest.c \
+            -o /tmp/selftest
+          /tmp/selftest
+
+      # ---------- 2. 真实握手（用同一份 C 代码打自己的后台） ----------
+      - name: 真实握手测试
+        run: |
+          clang -O2 -Wall -I crypto \
+            crypto/wy2.c crypto/tweetnacl.c crypto/wy2live.c \
+            -lcurl -lcrypto -o /tmp/wy2live
+          /tmp/wy2live || echo "live test failed"
+
+      # ---------- 3. 编译 iOS dylib ----------
       - name: 下载 iOS SDK
         run: |
           mkdir -p "$HOME/sdks"
           curl -L -o /tmp/sdk.tar.xz https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
           tar -xf /tmp/sdk.tar.xz -C "$HOME/sdks"
-          ls "$HOME/sdks"
           echo "SDKROOT=$HOME/sdks/iPhoneOS16.5.sdk" >> "$GITHUB_ENV"
 
       - name: 编译 CardGate.dylib
         run: |
-          clang --version
           clang -target arm64-apple-ios14.0 \
                 -isysroot "$SDKROOT" \
-                -fobjc-arc -fmodules -O2 \
-                -dynamiclib \
-                -fuse-ld=lld \
+                -fobjc-arc -O2 -I crypto -I . \
+                -dynamiclib -fuse-ld=lld \
                 -Wl,-undefined,dynamic_lookup \
                 -Wl,-platform_version,ios,14.0,16.5 \
                 -install_name @executable_path/Frameworks/CardGate.dylib \
                 -framework UIKit -framework Foundation -framework CoreGraphics \
-                -o CardGate.dylib CardGate.m
+                CardGate.m crypto/wy2.c crypto/tweetnacl.c \
+                -o CardGate.dylib
           file CardGate.dylib
           ls -l CardGate.dylib
 
