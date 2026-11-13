@@ -1,0 +1,36 @@
+name: build
+
+on: [push, workflow_dispatch]
+
+jobs:
+  dylib:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 ldid
+        run: brew install ldid dpkg xz || brew install ldid
+
+      - name: 部署 Theos 与 SDK
+        run: |
+          git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos"
+          mkdir -p "$HOME/theos/sdks"
+          curl -L -o /tmp/sdks.tar.xz https://github.com/theos/sdks/releases/latest/download/sdks.tar.xz
+          tar -xf /tmp/sdks.tar.xz -C "$HOME/theos/sdks"
+          ls "$HOME/theos/sdks"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: 编译
+        run: |
+          make clean || true
+          make -j2
+          find . -name '*.dylib' -print
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: CardGate-dylib
+          path: |
+            .theos/obj/**/*.dylib
+            packages/**/*.deb
+          if-no-files-found: error
