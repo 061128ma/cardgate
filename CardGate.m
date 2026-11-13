@@ -215,7 +215,9 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 @end
 
 @implementation CGAuroraView {
+    UIImageView *_photo;          // 背景图（用户提供）
     CAGradientLayer *_base;
+    CAGradientLayer *_scrim;      // 压暗层，保证文字可读
     NSMutableArray<CAGradientLayer *> *_blobs;
     CAEmitterLayer *_emitter;
 }
@@ -226,6 +228,30 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
         self.userInteractionEnabled = NO;
         self.backgroundColor = [UIColor blackColor];
 
+        // ① 用户背景图（等比填充，自适应横竖屏）
+        UIImage *bg = [CGAuroraView backgroundImage];
+        if (bg) {
+            _photo = [[UIImageView alloc] initWithImage:bg];
+            _photo.contentMode = UIViewContentModeScaleAspectFill;
+            _photo.clipsToBounds = YES;
+            _photo.frame = self.bounds;
+            _photo.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+            _photo.alpha = 0.92;
+            [self addSubview:_photo];
+        }
+
+        // ② 压暗层：上面叠渐变，让白色文字在图上清晰
+        _scrim = [CAGradientLayer layer];
+        _scrim.colors = @[
+            (id)[UIColor colorWithRed:0.0 green:0.01 blue:0.06 alpha:0.62].CGColor,
+            (id)[UIColor colorWithRed:0.02 green:0.0 blue:0.10 alpha:0.32].CGColor,
+            (id)[UIColor colorWithRed:0.0 green:0.02 blue:0.08 alpha:0.68].CGColor
+        ];
+        _scrim.locations = @[@0.0, @0.5, @1.0];
+        _scrim.startPoint = CGPointMake(0.0, 0.0);
+        _scrim.endPoint = CGPointMake(0.0, 1.0);
+        [self.layer addSublayer:_scrim];
+
         _base = [CAGradientLayer layer];
         _base.colors = @[
             (id)[UIColor colorWithRed:0.04 green:0.06 blue:0.14 alpha:1].CGColor,
@@ -235,15 +261,16 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
         ];
         _base.startPoint = CGPointMake(0.0, 0.0);
         _base.endPoint = CGPointMake(1.0, 1.0);
+        _base.opacity = bg ? 0.35f : 1.0f;   // 有底图时只留氛围色
         [self.layer addSublayer:_base];
 
         // 流动光斑：径向渐变 + 路径动画，形成"液态"流动感
         _blobs = [NSMutableArray array];
         NSArray *tints = @[
-            [UIColor colorWithRed:0.20 green:0.55 blue:1.00 alpha:0.55],
-            [UIColor colorWithRed:0.45 green:0.30 blue:1.00 alpha:0.50],
-            [UIColor colorWithRed:0.00 green:0.80 blue:0.85 alpha:0.42],
-            [UIColor colorWithRed:0.95 green:0.35 blue:0.75 alpha:0.38]
+            [UIColor colorWithRed:0.20 green:0.55 blue:1.00 alpha:0.30],
+            [UIColor colorWithRed:0.45 green:0.30 blue:1.00 alpha:0.26],
+            [UIColor colorWithRed:0.00 green:0.80 blue:0.85 alpha:0.22],
+            [UIColor colorWithRed:0.95 green:0.35 blue:0.75 alpha:0.20]
         ];
         for (int i = 0; i < tints.count; i++) {
             CAGradientLayer *b = [CAGradientLayer layer];
@@ -282,6 +309,22 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     return self;
 }
 
++ (UIImage *)backgroundImage {
+    // 依次尝试包内 LoginBg（jpg/png），找不到就回落到纯渐变
+    NSArray *names = @[@"LoginBg@3x", @"LoginBg@2x", @"LoginBg",
+                       @"LoginBackground", @"loginbg"];
+    for (NSString *n in names) {
+        for (NSString *ext in @[@"jpg", @"jpeg", @"png"]) {
+            NSString *p = [[NSBundle mainBundle] pathForResource:n ofType:ext];
+            if (p) {
+                UIImage *img = [UIImage imageWithContentsOfFile:p];
+                if (img) return img;
+            }
+        }
+    }
+    return nil;
+}
+
 + (UIImage *)dotImage {
     static UIImage *img;
     static dispatch_once_t once;
@@ -303,6 +346,8 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     [CATransaction setDisableActions:YES];
 
     _base.frame = self.bounds;
+    _scrim.frame = self.bounds;
+    if (_photo) _photo.frame = self.bounds;
 
     CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
     CGFloat base = MAX(w, h);
