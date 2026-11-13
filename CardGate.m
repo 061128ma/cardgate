@@ -34,7 +34,7 @@ static NSString *const CODE_BADTIME = @"105";    // 系统时间出错
 
 static NSString *const K_CARD   = @"wy2_card";
 static NSString *const K_EXPIRE = @"wy2_expire";
-static const  int      REVALIDATE_SEC = 1800;
+static const  int      REVALIDATE_SEC = 120;   // 心跳 2 分钟
 
 static uint8_t gSrvX[32], gSrvEd[32], gLicPub[32], gLicCli[32];
 static long long gTimeOffset = 0;   // 与服务器的时间差（秒）
@@ -515,6 +515,45 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 
 @end
 
+#pragma mark - ========== 校验中遮罩 ==========
+
+@interface CGCheckingVC : UIViewController
+@property (nonatomic, strong) UILabel *textLabel;
+@property (nonatomic, strong) UIActivityIndicatorView *spinner;
+@end
+
+@implementation CGCheckingVC
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor blackColor];
+    CGAuroraView *bg = [[CGAuroraView alloc] initWithFrame:self.view.bounds];
+    bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [self.view addSubview:bg];
+
+    self.spinner = [[UIActivityIndicatorView alloc]
+                    initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleLarge];
+    self.spinner.color = [UIColor whiteColor];
+    [self.view addSubview:self.spinner];
+    [self.spinner startAnimating];
+
+    self.textLabel = [UILabel new];
+    self.textLabel.text = @"正在校验授权…";
+    self.textLabel.textColor = [UIColor colorWithWhite:1 alpha:0.85];
+    self.textLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    self.textLabel.textAlignment = NSTextAlignmentCenter;
+    [self.view addSubview:self.textLabel];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    CGRect b = self.view.bounds;
+    self.spinner.center = CGPointMake(b.size.width * 0.5, b.size.height * 0.5 - 20);
+    self.textLabel.frame = CGRectMake(0, b.size.height * 0.5 + 16, b.size.width, 24);
+}
+
+- (UIStatusBarStyle)preferredStatusBarStyle { return UIStatusBarStyleLightContent; }
+@end
+
 #pragma mark - ========== 门禁控制 ==========
 
 @implementation CGate {
@@ -522,6 +561,7 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     CGGateVC *_vc;
     NSString *_card;
     NSTimer *_timer;
+    BOOL _checking;
 }
 
 + (instancetype)shared {
@@ -530,23 +570,59 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     return g;
 }
 
-- (void)start {
+#pragma mark 票据
+
+- (void)saveTicket:(NSString *)card expire:(double)expire {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d setObject:card forKey:K_CARD];
+    [d setDouble:expire forKey:K_EXPIRE];
+    [d synchronize];
+}
+
+- (void)clearTicket {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    [d removeObjectForKey:K_EXPIRE];
+    [d synchronize];
+}
+
+- (BOOL)hasTicket {
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     NSString *card = [d stringForKey:K_CARD];
     double exp = [d doubleForKey:K_EXPIRE];
-    if (card.length && exp > [[NSDate date] timeIntervalSince1970]) {
-        _card = [card copy];
-        [self scheduleRevalidate];
-        return;
-    }
-    [self show];
+    return card.length > 0 && exp > [[NSDate date] timeIntervalSince1970];
 }
 
-- (void)show {
+#pragma mark 启动流程
+
+- (void)start {
+    if (![self hasTicket]) {
+        [self showGateWithMessage:nil];
+        return;
+    }
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    _card = [d stringForKey:K_CARD];
+
+    // 每次启动都联网复核：卡被封/过期/掉绑定，立刻拦下
+    [self showChecking];
+    [self loginCard:_card attempt:0 done:^(BOOL ok, NSString *text) {
+        if (ok) {
+            [self hide];
+            [self scheduleRevalidate];
+        } else {
+            [self clearTicket];
+            [self showGateWithMessage:text];
+        }
+    }];
+}
+
+- (void)showGateWithMessage:(NSString *)message {
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (self->_win) {
+        self->_checking = NO;
+        if (self->_win && self->_vc) {
             [self->_win setHidden:NO];
             [self->_win makeKeyAndVisible];
+            if (message.length) self->_vc.msg.text = message;
             return;
         }
         CGRect scr = [UIScreen mainScreen].bounds;
@@ -560,12 +636,40 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
         self->_vc = vc;
         self->_win.rootViewController = vc;
         [self->_win makeKeyAndVisible];
+        if (message.length) {
+            vc.msg.text = message;
+            vc.msg.textColor = [UIColor colorWithRed:1 green:0.55 blue:0.55 alpha:1];
+        }
+    });
+}
+
+- (void)showChecking {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self->_checking) return;
+        self->_checking = YES;
+        self->_vc = nil;
+        CGRect scr = [UIScreen mainScreen].bounds;
+        if (!self->_win) {
+            self->_win = [[UIWindow alloc] initWithFrame:scr];
+            self->_win.windowLevel = UIWindowLevelAlert + 10;
+        }
+        self->_win.frame = scr;
+        self->_win.rootViewController = [CGCheckingVC new];
+        self->_win.backgroundColor = [UIColor blackColor];
+        [self->_win setHidden:NO];
+        [self->_win makeKeyAndVisible];
     });
 }
 
 - (void)hide {
-    dispatch_async(dispatch_get_main_queue(), ^{ [self->_win setHidden:YES]; });
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self->_checking = NO;
+        [self->_win setHidden:YES];
+        self->_vc = nil;
+    });
 }
+
+#pragma mark 提交
 
 - (void)handleSubmit:(NSString *)raw {
     NSString *card = [raw stringByTrimmingCharactersInSet:
@@ -573,6 +677,7 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     if (!card.length) { _vc.msg.text = @"请输入卡密"; return; }
     _vc.btn.enabled = NO;
     _vc.msg.text = @"登录中…";
+    _vc.msg.textColor = [UIColor colorWithWhite:1 alpha:0.7];
     [self loginCard:card attempt:0 done:^(BOOL ok, NSString *text) {
         self->_vc.btn.enabled = YES;
         self->_vc.msg.text = text;
@@ -594,6 +699,7 @@ static NSString *CodeName(NSInteger code) {
         case 151: return @"卡密已被使用";
         case 152: return @"设备不匹配";
         case 153: return @"卡密已被禁用";
+        case 154: return @"卡密已被封禁";
         default:  return nil;
     }
 }
@@ -622,10 +728,7 @@ static NSString *CodeName(NSInteger code) {
 
         double exp = expire;
         if (exp <= 0) exp = [[NSDate date] timeIntervalSince1970] + 3600;
-        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        [d setObject:card forKey:K_CARD];
-        [d setDouble:exp forKey:K_EXPIRE];
-        [d synchronize];
+        [self saveTicket:card expire:exp];
 
         NSDateFormatter *df = [NSDateFormatter new];
         df.dateFormat = @"yyyy-MM-dd HH:mm";
@@ -634,6 +737,8 @@ static NSString *CodeName(NSInteger code) {
     });
 }
 
+#pragma mark 心跳与回前台复查
+
 - (void)scheduleRevalidate {
     if (REVALIDATE_SEC <= 0 || !_card.length) return;
     [_timer invalidate];
@@ -641,19 +746,40 @@ static NSString *CodeName(NSInteger code) {
     _timer = [NSTimer scheduledTimerWithTimeInterval:REVALIDATE_SEC repeats:YES block:^(NSTimer *t) {
         CGate *strongSelf = weakSelf;
         if (!strongSelf) return;
-        [strongSelf loginCard:strongSelf->_card attempt:0 done:^(BOOL ok, NSString *text) {
-            if (!ok) {
-                NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-                [d removeObjectForKey:K_EXPIRE];
-                [d synchronize];
-                [t invalidate];
-                [strongSelf show];
-            }
-        }];
+        [strongSelf silentRevalidate];
+    }];
+
+    [[NSNotificationCenter defaultCenter] removeObserver:self
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+        selector:@selector(onBecomeActive)
+        name:UIApplicationDidBecomeActiveNotification object:nil];
+}
+
+- (void)onBecomeActive {
+    // 切回前台立刻复查，避免"封卡后仍在使用"
+    if (_checking) return;
+    if (![self hasTicket]) { [self showGateWithMessage:nil]; return; }
+    [self silentRevalidate];
+}
+
+- (void)silentRevalidate {
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSString *card = [d stringForKey:K_CARD] ?: _card;
+    if (!card.length) { [self showGateWithMessage:nil]; return; }
+
+    [self loginCard:card attempt:0 done:^(BOOL ok, NSString *text) {
+        if (ok) return;
+        [self clearTicket];
+        [self->_timer invalidate];
+        [self showGateWithMessage:text];
     }];
 }
 
-- (void)dealloc { [_timer invalidate]; }
+- (void)dealloc {
+    [_timer invalidate];
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
 
 @end
 
