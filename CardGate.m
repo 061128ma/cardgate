@@ -200,8 +200,6 @@ static void WYLoginOnce(NSString *card, long long timeOffset, WYDone done) {
 
 #pragma mark - ========== 门禁 UI ==========
 
-static UIImage *CGateLoadMascot(void);   // 前置声明
-
 @interface CGate : NSObject
 + (instancetype)shared;
 - (void)start;
@@ -412,7 +410,6 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
 @property (nonatomic, strong) UILabel *msg;
 @property (nonatomic, strong) UIButton *btn;
 @property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UIImageView *mascot;
 @property (nonatomic, strong) UIVisualEffectView *panel;
 @end
 
@@ -448,12 +445,6 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     self.titleLabel.layer.shadowRadius = 10;
     self.titleLabel.layer.shadowOffset = CGSizeZero;
     [content addSubview:self.titleLabel];
-
-    self.mascot = [UIImageView new];
-    self.mascot.contentMode = UIViewContentModeScaleAspectFit;
-    self.mascot.image = CGateLoadMascot();
-    self.mascot.hidden = (self.mascot.image == nil);
-    [self.view addSubview:self.mascot];
 
     self.field = [UITextField new];
     self.field.placeholder = @"请输入卡密";
@@ -491,18 +482,6 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     self.msg.numberOfLines = 2;
     [content addSubview:self.msg];
 
-    [self startMascotBobbing];
-}
-
-- (void)startMascotBobbing {
-    if (self.mascot.hidden) return;
-    self.mascot.transform = CGAffineTransformIdentity;
-    [UIView animateWithDuration:1.8 delay:0
-                        options:UIViewAnimationOptionAutoreverse | UIViewAnimationOptionRepeat |
-                                UIViewAnimationOptionCurveEaseInOut
-                     animations:^{
-        self.mascot.transform = CGAffineTransformMakeTranslation(0, -14);
-    } completion:nil];
 }
 
 - (void)submit {
@@ -547,22 +526,6 @@ static UIImage *CGateLoadMascot(void);   // 前置声明
     y += rowH + gap;
 
     self.msg.frame = CGRectMake(padX, y, innerW, msgH);
-
-    // 吉祥物：竖屏放在面板上方，横屏放在左侧空白区
-    if (!self.mascot.hidden) {
-        CGFloat side = landscape ? MIN(h * 0.52, 240) : MIN(w * 0.42, 180);
-        CGFloat mx, my;
-        if (landscape) {
-            mx = panelX - side - 28;
-            if (mx < 12) mx = 12;
-            my = (h - side) * 0.5;
-        } else {
-            mx = (w - side) * 0.5;
-            my = panelY - side - (safeTop > 0 ? 6 : 14);
-            if (my < safeTop + 8) my = safeTop + 8;
-        }
-        self.mascot.frame = CGRectMake(mx, my, side, side);
-    }
 
     // 输入框左内边距
     UIView *lv = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 14, rowH)];
@@ -1095,15 +1058,6 @@ static NSString *CodeName(NSInteger code) {
 @end
 
 #pragma mark - ========== 吉祥物加载 ==========
-
-static UIImage *CGateLoadMascot(void) {
-    NSArray *names = @[@"NaiLong@3x", @"NaiLong@2x", @"NaiLong", @"nailong", @"Mascot"];
-    for (NSString *n in names) {
-        NSString *p = [[NSBundle mainBundle] pathForResource:n ofType:@"png"];
-        if (p) return [UIImage imageWithContentsOfFile:p];
-    }
-    return nil;
-}
 
 #pragma mark - ========== 入口 ==========
 
