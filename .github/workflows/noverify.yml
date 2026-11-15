@@ -1,4 +1,4 @@
-name: noverify
+﻿name: noverify
 
 on: [push, workflow_dispatch]
 
@@ -30,7 +30,7 @@ jobs:
                 -Wl,-platform_version,ios,14.0,16.5 \
                 -install_name @executable_path/Frameworks/NoVerify.dylib \
                 -framework UIKit -framework Foundation \
-                noverify/NoVerify.m \
+                NoVerify.m \
                 -o NoVerify.dylib
           file NoVerify.dylib
           ls -l NoVerify.dylib
