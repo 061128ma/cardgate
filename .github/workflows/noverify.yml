@@ -1,0 +1,43 @@
+name: noverify
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装工具链
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang lld xz-utils curl file
+
+      - name: 下载 iOS SDK
+        run: |
+          mkdir -p "$HOME/sdks"
+          curl -L -o /tmp/sdk.tar.xz https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS16.5.sdk.tar.xz
+          tar -xf /tmp/sdk.tar.xz -C "$HOME/sdks"
+          echo "SDKROOT=$HOME/sdks/iPhoneOS16.5.sdk" >> "$GITHUB_ENV"
+
+      - name: 编译 NoVerify.dylib
+        run: |
+          clang -target arm64-apple-ios14.0 \
+                -isysroot "$SDKROOT" \
+                -fobjc-arc -O2 \
+                -dynamiclib -fuse-ld=lld \
+                -Wl,-undefined,dynamic_lookup \
+                -Wl,-platform_version,ios,14.0,16.5 \
+                -install_name @executable_path/Frameworks/NoVerify.dylib \
+                -framework UIKit -framework Foundation \
+                noverify/NoVerify.m \
+                -o NoVerify.dylib
+          file NoVerify.dylib
+          ls -l NoVerify.dylib
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: NoVerify-dylib
+          path: NoVerify.dylib
+          if-no-files-found: error
