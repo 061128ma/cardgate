@@ -1,4 +1,4 @@
-// ============================================================
+﻿// ============================================================
 //  NoVerify.m v2 —— Stocks.KS 卡密验证绕过
 //
 //  v1 的 bug：viewDidAppear: 不在 RootViewController 自身方法表里，
@@ -163,7 +163,7 @@ static void NYInstall(void) {
         timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
                                        dispatch_get_main_queue());
         dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, 0),
-                                  1ull * NSEC_PER_SEC, 0.2ull * NSEC_PER_SEC);
+                                  1ull * NSEC_PER_SEC, (uint64_t)(0.2 * NSEC_PER_SEC));
         dispatch_source_set_event_handler(timer, ^{
             static int tick = 0;
             if (++tick > 30) { dispatch_source_cancel(timer); return; }
