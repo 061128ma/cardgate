@@ -194,3 +194,16 @@ static void ny_entry(void) {
                        dispatch_get_main_queue(), ^{ NYInstall(); });
     });
 }
+
+#pragma mark - 双保险：+load（任何 iOS 版本都会调用）
+
+@interface NYLoader : NSObject @end
+
+@implementation NYLoader
++ (void)load {
+    // +load 早于主程序 UI 就绪，只排一个主队列任务
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NYInstall();
+    });
+}
+@end
